@@ -1,7 +1,7 @@
 # whatsapp_auto_reply_once.py
 """
 Improved WhatsApp Web auto-reply bot (educational / experimental use).
-Replies once per run when the trigger text is seen in the monitored chat.
+Replies once when the trigger text is seen, then exits.
 """
 
 import time
@@ -130,9 +130,8 @@ class WhatsAppBot:
 
     def monitor_messages(self, trigger_text, reply_text, group_name=None, poll_interval=2):
         """
-        Monitor visible messages and auto-reply once per run when trigger_text is found.
+        Monitor visible messages and auto-reply once when trigger_text is found, then exit.
         """
-        replied_for_trigger = False  # will prevent multiple replies during this run
         trigger_lower = trigger_text.lower()
 
         if group_name:
@@ -140,6 +139,7 @@ class WhatsAppBot:
                 logging.warning("Falling back to currently open chat.")
 
         logging.info("Monitoring for trigger: %r", trigger_text)
+        logging.info("Bot will reply once and exit when trigger is detected.")
 
         # graceful shutdown handler
         def _signal_handler(sig, frame):
@@ -164,15 +164,18 @@ class WhatsAppBot:
                         self.processed.add(mid)
                         continue
 
-                    if (trigger_lower in text.lower()) and not replied_for_trigger:
+                    if trigger_lower in text.lower():
                         logging.info("Trigger matched in message id=%s: %s", mid, text)
                         sent = self.send_message(reply_text)
                         if sent:
                             self.processed.add(mid)
-                            replied_for_trigger = True  # reply only once per run
-                            logging.info("Replied once and will not reply again this run.")
+                            logging.info("Reply sent successfully. Exiting bot...")
+                            time.sleep(1)  # brief pause to ensure message is sent
+                            self.running = False  # stop the loop
+                            return True  # indicate success
                         else:
                             logging.warning("Failed to send reply for message id=%s", mid)
+                            self.processed.add(mid)
                     else:
                         self.processed.add(mid)
 
@@ -180,6 +183,8 @@ class WhatsAppBot:
             except Exception as e:
                 logging.exception("Exception in monitor loop: %s", e)
                 time.sleep(2)
+        
+        return False  # didn't find trigger or was interrupted
 
     def close(self):
         try:
@@ -191,15 +196,19 @@ class WhatsAppBot:
 
 if __name__ == "__main__":
     # --- Configuration ---
-    TRIGGER_MESSAGE = "Değerli öğrenciler yarın çalışma saatlerimiz 08:00-15:00 saatleri arasında olacaktır. 25 kişi alınacaktır. Kimler çalışabilir?"
-    AUTO_REPLY = "Auto Reply: BEN"
+    TRIGGER_MESSAGE = "Kimler çalışabilir?"
+    AUTO_REPLY = "g"
     GROUP_NAME = None  # set this to exact group/chat title to monitor a specific chat, or leave None
 
     bot = WhatsAppBot()
     try:
         bot.start()
         logging.info("Bot active. Open the group/chat you want to monitor in WhatsApp Web.")
-        bot.monitor_messages(TRIGGER_MESSAGE, AUTO_REPLY, group_name=GROUP_NAME, poll_interval=2)
+        success = bot.monitor_messages(TRIGGER_MESSAGE, AUTO_REPLY, group_name=GROUP_NAME, poll_interval=2)
+        if success:
+            logging.info("Mission accomplished! Bot replied and is now exiting.")
+        else:
+            logging.info("Bot stopped without finding trigger message.")
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
     except Exception as e:
