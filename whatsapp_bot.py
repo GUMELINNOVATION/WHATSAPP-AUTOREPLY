@@ -1,12 +1,14 @@
-# whatsapp_auto_reply_once.py
+# whatsapp_auto_reply_app.py
 """
-Improved WhatsApp Web auto-reply bot (educational / experimental use).
-Replies once when the trigger text is seen, then exits.
+WhatsApp Auto-Reply Desktop Application
+Cross-platform GUI app for auto-replying to WhatsApp messages
 """
 
 import time
 import logging
-import signal
+import threading
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -15,44 +17,58 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
 
 class WhatsAppBot:
-    def __init__(self, driver_path=None, headless=False, wait_timeout=600):
-        logging.info("Setting up Chrome driver...")
-        chrome_options = webdriver.ChromeOptions()
-        if headless:
-            chrome_options.add_argument("--headless=new")
-            chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        # chrome_options.add_argument(r"--user-data-dir=./whatsapp_profile")  # persist session if desired
+    def __init__(self):
+        self.driver = None
+        self.wait = None
+        self.running = False
+        self.processed = set()
+        self.callback = None
 
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.wait = WebDriverWait(self.driver, wait_timeout)
-        self.running = True
-        self.processed = set()  # set of message ids already seen/handled
+    def log(self, message, level="INFO"):
+        if self.callback:
+            self.callback(message, level)
+        else:
+            logging.info(message)
 
-    def start(self):
-        logging.info("Opening WhatsApp Web...")
-        self.driver.get("https://web.whatsapp.com")
-        logging.info("Please scan the QR code with your phone if necessary...")
-        # Wait until main chat area or search box is available
+    def start_driver(self, headless=False):
         try:
+            self.log("Setting up Chrome driver...")
+            chrome_options = webdriver.ChromeOptions()
+            if headless:
+                chrome_options.add_argument("--headless=new")
+                chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            self.wait = WebDriverWait(self.driver, 600)
+            
+            self.log("Opening WhatsApp Web...")
+            self.driver.get("https://web.whatsapp.com")
+            self.log("Please scan the QR code with your phone...")
+            
             self.wait.until(EC.presence_of_element_located(
                 (By.XPATH, '//div[@contenteditable="true" and @data-tab]')
             ))
-            logging.info("WhatsApp Web ready.")
+            self.log("✓ WhatsApp Web ready!", "SUCCESS")
             time.sleep(1)
+            return True
         except Exception as e:
-            logging.error("Timeout waiting for WhatsApp Web to be ready: %s", e)
-            raise
+            self.log(f"Error starting driver: {e}", "ERROR")
+            return False
 
     def select_chat(self, chat_name, timeout=10):
         try:
-            logging.info("Searching for chat: %s", chat_name)
+            self.log(f"Searching for chat: {chat_name}")
             search_box = self.wait.until(EC.element_to_be_clickable(
                 (By.XPATH, '//div[@contenteditable="true" and @data-tab="3"]')
             ))
@@ -60,16 +76,16 @@ class WhatsAppBot:
             time.sleep(0.2)
             search_box.clear()
             search_box.send_keys(chat_name)
-            # wait and click the resulting title
+            
             title = WebDriverWait(self.driver, timeout).until(
                 EC.element_to_be_clickable((By.XPATH, f'//span[@title="{chat_name}"]'))
             )
             title.click()
             time.sleep(1)
-            logging.info("Selected chat: %s", chat_name)
+            self.log(f"✓ Selected chat: {chat_name}", "SUCCESS")
             return True
         except Exception as e:
-            logging.error("Could not select chat '%s': %s", chat_name, e)
+            self.log(f"Could not select chat '{chat_name}': {e}", "ERROR")
             return False
 
     def _get_last_message_containers(self, max_messages=10):
@@ -79,12 +95,10 @@ class WhatsAppBot:
                 '//div[contains(@class,"message-in")] | //div[contains(@class,"message-out")]'
             )
             return containers[-max_messages:] if len(containers) >= max_messages else containers
-        except Exception as e:
-            logging.debug("Failed to get message containers: %s", e)
+        except Exception:
             return []
 
     def _extract_message_id(self, container):
-        # try several attributes then fallback to text+position hash
         for attr in ("data-id", "data-msg-id", "data-pre-plain-text", "data-id-message"):
             try:
                 val = container.get_attribute(attr)
@@ -102,19 +116,16 @@ class WhatsAppBot:
 
     def _extract_text_from_container(self, container):
         try:
-            # try to find the LTR span commonly used for message text
             try:
                 span = container.find_element(By.XPATH, './/span[@dir="ltr"]')
                 return span.text.strip()
             except Exception:
                 return container.text.strip()
-        except Exception as e:
-            logging.debug("Failed to extract text: %s", e)
+        except Exception:
             return ""
 
     def send_message(self, message):
         try:
-            # Find message input; different data-tab values exist across WhatsApp versions
             message_box = self.driver.find_element(
                 By.XPATH,
                 '//div[@contenteditable="true" and (@data-tab="10" or @data-tab="6" or @data-tab="1")]'
@@ -122,97 +133,314 @@ class WhatsAppBot:
             message_box.click()
             message_box.send_keys(message)
             message_box.send_keys(Keys.ENTER)
-            logging.info("Sent message: %s", message)
+            self.log(f"✓ Sent message: {message}", "SUCCESS")
             return True
         except Exception as e:
-            logging.error("Error sending message: %s", e)
+            self.log(f"Error sending message: {e}", "ERROR")
             return False
 
     def monitor_messages(self, trigger_text, reply_text, group_name=None, poll_interval=2):
-        """
-        Monitor visible messages and auto-reply once when trigger_text is found, then exit.
-        """
-        trigger_lower = trigger_text.lower()
+        trigger_keywords = [keyword.strip().lower() for keyword in trigger_text.split(',') if keyword.strip()]
+        if not trigger_keywords:
+            self.log("Trigger text is empty. Please provide at least one keyword.", "ERROR")
+            self.running = False
+            return False
 
         if group_name:
             if not self.select_chat(group_name):
-                logging.warning("Falling back to currently open chat.")
+                self.log("Falling back to currently open chat.", "WARNING")
 
-        logging.info("Monitoring for trigger: %r", trigger_text)
-        logging.info("Bot will reply once and exit when trigger is detected.")
+        self.log(f"🔍 Monitoring for triggers: {trigger_keywords}")
+        self.running = True
 
-        # graceful shutdown handler
-        def _signal_handler(sig, frame):
-            logging.info("Received shutdown signal. Stopping...")
-            self.running = False
+        # Clear processed messages and prime with existing ones to only see new messages.
+        self.processed.clear()
+        self.log("Priming... Ignoring messages already on screen.")
+        time.sleep(1)  # Give it a second to make sure chat is loaded
+        try:
+            initial_containers = self._get_last_message_containers(max_messages=20)
+            for c in initial_containers:
+                mid = self._extract_message_id(c)
+                if mid:
+                    self.processed.add(mid)
+            self.log(f"Priming complete. Now monitoring for new messages.", "SUCCESS")
+        except Exception as e:
+            self.log(f"Warning: Could not prime messages. May react to old messages. Error: {e}", "WARNING")
 
-        signal.signal(signal.SIGINT, _signal_handler)
-        signal.signal(signal.SIGTERM, _signal_handler)
+        trigger_detected = False
+        is_typing = False  # To track typing status
 
-        while self.running:
+        # Stage 1: Wait for new trigger messages
+        self.log("Stage 1: Looking for new trigger messages...")
+        while self.running and not trigger_detected:
             try:
+                # Check for typing status to increase polling frequency
+                try:
+                    # This XPath is a guess, it looks for a "typing" status in the chat header.
+                    self.driver.find_element(By.XPATH, '//header//span[contains(text(), "typing")]')
+                    if not is_typing:
+                        self.log("Typing detected! Switching to high-frequency polling.", "INFO")
+                        is_typing = True
+                except Exception:
+                    if is_typing:
+                        self.log("Typing stopped. Reverting to normal polling.", "INFO")
+                    is_typing = False
+
                 containers = self._get_last_message_containers(max_messages=8)
                 for c in containers:
                     mid = self._extract_message_id(c)
-                    if not mid:
-                        continue
-                    if mid in self.processed:
+                    if not mid or mid in self.processed:
                         continue
 
                     text = self._extract_text_from_container(c)
                     if not text:
                         self.processed.add(mid)
                         continue
+                    
+                    text_lower = text.lower()
+                    matched_keyword = next((kw for kw in trigger_keywords if kw in text_lower), None)
 
-                    if trigger_lower in text.lower():
-                        logging.info("Trigger matched in message id=%s: %s", mid, text)
-                        sent = self.send_message(reply_text)
-                        if sent:
-                            self.processed.add(mid)
-                            logging.info("Reply sent successfully. Exiting bot...")
-                            time.sleep(1)  # brief pause to ensure message is sent
-                            self.running = False  # stop the loop
-                            return True  # indicate success
-                        else:
-                            logging.warning("Failed to send reply for message id=%s", mid)
-                            self.processed.add(mid)
+                    if matched_keyword:
+                        self.log(f"✓ Trigger keyword '{matched_keyword}' matched! Message: {text[:50]}...", "SUCCESS")
+                        self.processed.add(mid)
+                        trigger_detected = True
+                        break  # from container loop
                     else:
                         self.processed.add(mid)
 
-                time.sleep(poll_interval)
+                if not trigger_detected:
+                    current_poll_interval = 0.2 if is_typing else poll_interval
+                    time.sleep(current_poll_interval)
             except Exception as e:
-                logging.exception("Exception in monitor loop: %s", e)
-                time.sleep(2)
-        
-        return False  # didn't find trigger or was interrupted
+                self.log(f"Exception in trigger monitoring loop: {e}", "ERROR")
+                time.sleep(poll_interval)
 
-    def close(self):
+        # Stage 2: Wait for the chat to be writable and send the message fast
+        if trigger_detected and self.running:
+            self.log("Stage 2: Trigger detected. Waiting for chat to open...")
+            start_time = time.time()
+            message_sent = False
+
+            # Timeout of 30 seconds to send the message after trigger
+            while self.running and not message_sent and (time.time() - start_time) < 30:
+                try:
+                    # Look for the enabled message box.
+                    message_box = self.driver.find_element(
+                        By.XPATH,
+                        '//div[@contenteditable="true" and (@data-tab="10" or @data-tab="6" or @data-tab="1")]'
+                    )
+
+                    # If we found it, the chat is open.
+                    message_box.click()
+
+                    # First message
+                    message_box.send_keys(reply_text)
+                    message_box.send_keys(Keys.ENTER)
+                    self.log(f"✓ Sent first message: {reply_text}", "SUCCESS")
+                    
+                    time.sleep(1) # Small delay between messages
+
+                    # Second message
+                    message_box.send_keys(reply_text) # Sending the same reply_text again
+                    message_box.send_keys(Keys.ENTER)
+                    self.log(f"✓ Sent second message: {reply_text}", "SUCCESS")
+
+                    message_sent = True
+                    
+                    # Wait 5 seconds before terminating
+                    self.log("Waiting 5 seconds before terminating...", "INFO")
+                    time.sleep(5) 
+                    
+                    self.running = False  # Stop the bot after sending and waiting
+                    return True
+
+                except Exception:
+                    # Message box is not available, likely admin-only mode.
+                    # Wait a very short time and try again.
+                    time.sleep(0.01)
+
+            if not message_sent:
+                self.log("Timed out waiting for chat to open after trigger.", "WARNING")
+
+        self.running = False
+        return False
+
+    def stop(self):
+        self.running = False
+        if self.driver:
+            try:
+                self.log("Closing browser...")
+                self.driver.quit()
+                self.log("✓ Browser closed.", "SUCCESS")
+            except Exception as e:
+                self.log(f"Error closing driver: {e}", "ERROR")
+
+
+class WhatsAppAutoReplyApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("WhatsApp Auto-Reply Bot")
+        self.root.geometry("700x600")
+        self.root.resizable(True, True)
+        
+        self.bot = WhatsAppBot()
+        self.bot.callback = self.log_message
+        self.bot_thread = None
+        
+        self.create_widgets()
+        
+    def create_widgets(self):
+        # Title
+        title_label = tk.Label(
+            self.root,
+            text="WhatsApp Auto-Reply Bot",
+            font=("Arial", 18, "bold"),
+            fg="#075e54"
+        )
+        title_label.pack(pady=10)
+        
+        # Configuration Frame
+        config_frame = ttk.LabelFrame(self.root, text="Configuration", padding=10)
+        config_frame.pack(padx=20, pady=10, fill="x")
+        
+        # Trigger Message
+        ttk.Label(config_frame, text="Trigger Message:").grid(row=0, column=0, sticky="w", pady=5)
+        self.trigger_entry = ttk.Entry(config_frame, width=50)
+        self.trigger_entry.insert(0, "Kimler çalışabilir?")
+        self.trigger_entry.grid(row=0, column=1, pady=5, padx=5)
+        
+        # Reply Message
+        ttk.Label(config_frame, text="Auto-Reply:").grid(row=1, column=0, sticky="w", pady=5)
+        self.reply_entry = ttk.Entry(config_frame, width=50)
+        self.reply_entry.insert(0, "g")
+        self.reply_entry.grid(row=1, column=1, pady=5, padx=5)
+        
+        # Group Name (Optional)
+        ttk.Label(config_frame, text="Group/Chat Name (optional):").grid(row=2, column=0, sticky="w", pady=5)
+        self.group_entry = ttk.Entry(config_frame, width=50)
+        self.group_entry.grid(row=2, column=1, pady=5, padx=5)
+        
+        # Control Buttons
+        button_frame = tk.Frame(self.root)
+        button_frame.pack(pady=10)
+        
+        self.start_button = tk.Button(
+            button_frame,
+            text="▶ Start Bot",
+            command=self.start_bot,
+            bg="#25d366",
+            fg="white",
+            font=("Arial", 12, "bold"),
+            width=15,
+            height=2
+        )
+        self.start_button.pack(side="left", padx=5)
+        
+        self.stop_button = tk.Button(
+            button_frame,
+            text="⏹ Stop Bot",
+            command=self.stop_bot,
+            bg="#dc3545",
+            fg="white",
+            font=("Arial", 12, "bold"),
+            width=15,
+            height=2,
+            state="disabled"
+        )
+        self.stop_button.pack(side="left", padx=5)
+        
+        # Log Frame
+        log_frame = ttk.LabelFrame(self.root, text="Activity Log", padding=10)
+        log_frame.pack(padx=20, pady=10, fill="both", expand=True)
+        
+        self.log_text = scrolledtext.ScrolledText(
+            log_frame,
+            height=15,
+            width=80,
+            state="disabled",
+            font=("Courier", 9)
+        )
+        self.log_text.pack(fill="both", expand=True)
+        
+        # Status Bar
+        self.status_label = tk.Label(
+            self.root,
+            text="Status: Ready",
+            bg="#f0f0f0",
+            anchor="w",
+            relief="sunken"
+        )
+        self.status_label.pack(side="bottom", fill="x")
+    
+    def log_message(self, message, level="INFO"):
+        self.log_text.configure(state="normal")
+        
+        timestamp = time.strftime("%H:%M:%S")
+        color = {
+            "INFO": "black",
+            "SUCCESS": "green",
+            "WARNING": "orange",
+            "ERROR": "red"
+        }.get(level, "black")
+        
+        tag = f"tag_{level}"
+        self.log_text.tag_config(tag, foreground=color)
+        self.log_text.insert("end", f"[{timestamp}] {message}\n", tag)
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+    
+    def start_bot(self):
+        trigger = self.trigger_entry.get().strip()
+        reply = self.reply_entry.get().strip()
+        group = self.group_entry.get().strip() or None
+        
+        if not trigger or not reply:
+            messagebox.showerror("Error", "Please enter both trigger and reply messages!")
+            return
+        
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="normal")
+        self.status_label.config(text="Status: Running...", bg="#90EE90")
+        
+        self.bot_thread = threading.Thread(
+            target=self.run_bot,
+            args=(trigger, reply, group),
+            daemon=True
+        )
+        self.bot_thread.start()
+    
+    def run_bot(self, trigger, reply, group):
         try:
-            logging.info("Closing browser...")
-            self.driver.quit()
+            if self.bot.start_driver():
+                self.log_message("Open the chat you want to monitor in WhatsApp Web!")
+                time.sleep(3)
+                success = self.bot.monitor_messages(trigger, reply, group)
+                if success:
+                    self.log_message("✓ Bot completed successfully!", "SUCCESS")
+                else:
+                    self.log_message("Bot stopped.", "WARNING")
         except Exception as e:
-            logging.debug("Error closing driver: %s", e)
+            self.log_message(f"Fatal error: {e}", "ERROR")
+        finally:
+            self.bot.stop()
+            self.root.after(0, self.reset_ui)
+    
+    def stop_bot(self):
+        self.log_message("Stopping bot...", "WARNING")
+        self.bot.stop()
+        self.reset_ui()
+    
+    def reset_ui(self):
+        self.start_button.config(state="normal")
+        self.stop_button.config(state="disabled")
+        self.status_label.config(text="Status: Ready", bg="#f0f0f0")
+
+
+def main():
+    root = tk.Tk()
+    app = WhatsAppAutoReplyApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    # --- Configuration ---
-    TRIGGER_MESSAGE = "Kimler çalışabilir?"
-    AUTO_REPLY = "g"
-    GROUP_NAME = None  # set this to exact group/chat title to monitor a specific chat, or leave None
-
-    bot = WhatsAppBot()
-    try:
-        bot.start()
-        logging.info("Bot active. Open the group/chat you want to monitor in WhatsApp Web.")
-        success = bot.monitor_messages(TRIGGER_MESSAGE, AUTO_REPLY, group_name=GROUP_NAME, poll_interval=2)
-        if success:
-            logging.info("Mission accomplished! Bot replied and is now exiting.")
-        else:
-            logging.info("Bot stopped without finding trigger message.")
-    except KeyboardInterrupt:
-        logging.info("Interrupted by user.")
-    except Exception as e:
-        logging.exception("Fatal error: %s", e)
-    finally:
-        bot.close()
-        logging.info("Bot closed successfully.")
+    main()

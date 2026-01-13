@@ -1,0 +1,3 @@
+([('WhatsApp AutoReply',
+   '/Users/mac/Desktop/current/whatapp auto/dist/WhatsApp AutoReply',
+   'EXECUTABLE')],)
