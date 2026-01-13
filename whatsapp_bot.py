@@ -217,53 +217,54 @@ class WhatsAppBot:
 
         # Stage 2: Wait for the chat to be writable and send the message fast
         if trigger_detected and self.running:
-            self.log("Stage 2: Trigger detected. Waiting for chat to open...")
-            start_time = time.time()
-            message_sent = False
+            self.log("Stage 2: Trigger detected. Will attempt to send messages for up to 5 minutes...")
+            stage2_start_time = time.time()
+            at_least_one_sent = False
 
-            # Timeout of 30 seconds to send the message after trigger
-            while self.running and not message_sent and (time.time() - start_time) < 30:
+            # 5-minute timeout for the entire Stage 2
+            while self.running and (time.time() - stage2_start_time) < 300:
+                if at_least_one_sent:
+                    break  # Exit the 5-minute loop if we've sent at least one message.
+
                 try:
-                    # Look for the enabled message box.
-                    message_box = self.driver.find_element(
-                        By.XPATH,
-                        '//div[@contenteditable="true" and (@data-tab="10" or @data-tab="6" or @data-tab="1")]'
+                    # Wait for the message box to be clickable
+                    message_box = WebDriverWait(self.driver, 0.1).until(
+                        EC.element_to_be_clickable((By.XPATH, '//div[@contenteditable="true" and (@data-tab="10" or @data-tab="6" or @data-tab="1")]'))
                     )
+                    
+                    self.log("Chat is open. Attempting to send messages...", "INFO")
 
-                    # If we found it, the chat is open.
+                    # Try to send the first message
                     message_box.click()
-
-                    # First message
                     message_box.send_keys(reply_text)
                     message_box.send_keys(Keys.ENTER)
                     self.log(f"✓ Sent first message: {reply_text}", "SUCCESS")
+                    at_least_one_sent = True  # Mark success!
                     
-                    time.sleep(1) # Small delay between messages
+                    time.sleep(1)
 
-                    # Second message
-                    message_box.send_keys(reply_text) # Sending the same reply_text again
+                    # Try to send the second message
+                    message_box.click()  # Re-focus
+                    message_box.send_keys(reply_text)
                     message_box.send_keys(Keys.ENTER)
                     self.log(f"✓ Sent second message: {reply_text}", "SUCCESS")
 
-                    message_sent = True
-                    
-                    # Wait 5 seconds before terminating
-                    self.log("Waiting 5 seconds before terminating...", "INFO")
-                    time.sleep(5) 
-                    
-                    self.running = False  # Stop the bot after sending and waiting
-                    return True
-
                 except Exception:
-                    # Message box is not available, likely admin-only mode.
-                    # Wait a very short time and try again.
-                    time.sleep(0.01)
-
-            if not message_sent:
-                self.log("Timed out waiting for chat to open after trigger.", "WARNING")
+                    # This exception means the chat is likely closed or the page is loading.
+                    # We'll just wait a moment and let the 5-minute loop try again.
+                    time.sleep(0.05)
+            
+            # After the loop
+            if at_least_one_sent:
+                self.log("Task complete. At least one message was sent.", "SUCCESS")
+                # Wait 5 seconds before terminating
+                self.log("Waiting 5 seconds before terminating...", "INFO")
+                time.sleep(5)
+            else:
+                self.log("Timed out after 5 minutes. Could not send any messages.", "ERROR")
 
         self.running = False
-        return False
+        return at_least_one_sent
 
     def stop(self):
         self.running = False
