@@ -88,7 +88,7 @@ class WhatsAppBot:
             self.log(f"Could not select chat '{chat_name}': {e}", "ERROR")
             return False
 
-    def _get_last_message_containers(self, max_messages=10):
+    def _get_last_message_containers(self, max_messages=100):
         try:
             containers = self.driver.find_elements(
                 By.XPATH,
@@ -158,7 +158,7 @@ class WhatsAppBot:
         self.log("Priming... Ignoring messages already on screen.")
         time.sleep(1)  # Give it a second to make sure chat is loaded
         try:
-            initial_containers = self._get_last_message_containers(max_messages=20)
+            initial_containers = self._get_last_message_containers(max_messages=100)
             for c in initial_containers:
                 mid = self._extract_message_id(c)
                 if mid:
@@ -186,7 +186,7 @@ class WhatsAppBot:
                         self.log("Typing stopped. Reverting to normal polling.", "INFO")
                     is_typing = False
 
-                containers = self._get_last_message_containers(max_messages=8)
+                containers = self._get_last_message_containers(max_messages=100)
                 for c in containers:
                     mid = self._extract_message_id(c)
                     if not mid or mid in self.processed:
@@ -217,54 +217,39 @@ class WhatsAppBot:
 
         # Stage 2: Wait for the chat to be writable and send the message fast
         if trigger_detected and self.running:
-            self.log("Stage 2: Trigger detected. Will attempt to send messages for up to 5 minutes...")
-            stage2_start_time = time.time()
-            at_least_one_sent = False
-
-            # 5-minute timeout for the entire Stage 2
-            while self.running and (time.time() - stage2_start_time) < 300:
-                if at_least_one_sent:
-                    break  # Exit the 5-minute loop if we've sent at least one message.
-
+            self.log("Stage 2: Trigger detected. Sending 5 messages...", "INFO")
+            messages_sent = 0
+            target_messages = 5
+            
+            # Loop until we send the target number of messages
+            while self.running and messages_sent < target_messages:
                 try:
                     # Wait for the message box to be clickable
-                    message_box = WebDriverWait(self.driver, 0.1).until(
+                    message_box = WebDriverWait(self.driver, 0.5).until(
                         EC.element_to_be_clickable((By.XPATH, '//div[@contenteditable="true" and (@data-tab="10" or @data-tab="6" or @data-tab="1")]'))
                     )
                     
-                    self.log("Chat is open. Attempting to send messages...", "INFO")
-
-                    # Try to send the first message
+                    # Send message
                     message_box.click()
                     message_box.send_keys(reply_text)
                     message_box.send_keys(Keys.ENTER)
-                    self.log(f"✓ Sent first message: {reply_text}", "SUCCESS")
-                    at_least_one_sent = True  # Mark success!
+                    messages_sent += 1
+                    self.log(f"✓ Sent message {messages_sent}/{target_messages}: {reply_text}", "SUCCESS")
                     
-                    time.sleep(1)
-
-                    # Try to send the second message
-                    message_box.click()  # Re-focus
-                    message_box.send_keys(reply_text)
-                    message_box.send_keys(Keys.ENTER)
-                    self.log(f"✓ Sent second message: {reply_text}", "SUCCESS")
+                    # Small delay between messages to ensure they are processed
+                    time.sleep(0.5)
 
                 except Exception:
-                    # This exception means the chat is likely closed or the page is loading.
-                    # We'll just wait a moment and let the 5-minute loop try again.
-                    time.sleep(0.05)
+                    # Retry if box not found (chat closed or loading)
+                    time.sleep(0.1)
             
-            # After the loop
-            if at_least_one_sent:
-                self.log("Task complete. At least one message was sent.", "SUCCESS")
-                # Wait 5 seconds before terminating
-                self.log("Waiting 5 seconds before terminating...", "INFO")
-                time.sleep(5)
+            if messages_sent >= target_messages:
+                self.log(f"Task complete. Sent {messages_sent} messages.", "SUCCESS")
             else:
-                self.log("Timed out after 5 minutes. Could not send any messages.", "ERROR")
+                self.log("Stopped before sending all messages.", "WARNING")
 
         self.running = False
-        return at_least_one_sent
+        return True
 
     def stop(self):
         self.running = False
@@ -423,7 +408,7 @@ class WhatsAppAutoReplyApp:
         except Exception as e:
             self.log_message(f"Fatal error: {e}", "ERROR")
         finally:
-            self.bot.stop()
+            # self.bot.stop() # Keep browser open as requested
             self.root.after(0, self.reset_ui)
     
     def stop_bot(self):
