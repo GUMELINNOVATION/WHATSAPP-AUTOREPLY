@@ -396,7 +396,7 @@ class WhatsAppAutoReplyApp:
         group = self.group_entry.get().strip() or None
         
         if not trigger or not reply:
-            messagebox.showerror("Error", "Please enter both trigger and reply messages!")
+            messagebox.showerror("Error", " messages!")
             return
         
         self.start_button.config(state="disabled")
